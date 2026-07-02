@@ -42,7 +42,21 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Hira
 .product-name { font-size: 14px; font-weight: 500; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .product-price-label { font-size: 12px; color: #888; margin-top: 2px; }
 .add-btn { font-size: 22px; color: #22a06b; font-weight: 300; flex-shrink: 0; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; background: #e8f8f0; border-radius: 50%; }
+.add-btn.small { font-size: 18px; width: 30px; height: 30px; }
 .in-cart-badge { font-size: 11px; font-weight: 600; color: #22a06b; background: #e8f8f0; border-radius: 6px; padding: 2px 7px; flex-shrink: 0; }
+
+/* 商品グループ */
+.group-header { margin-bottom: 0; border-radius: 12px; }
+.group-header.expanded { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.chevron { font-size: 12px; color: #aaa; flex-shrink: 0; transition: transform 0.15s; width: 16px; text-align: center; }
+.chevron.expanded { transform: rotate(90deg); }
+.group-body { background: #fbfbfb; border: 1px solid #eee; border-top: none; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; margin: -6px 0 6px; padding: 4px 8px 8px; }
+.variant-card { display: flex; align-items: center; gap: 10px; padding: 9px 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+.variant-card:last-child { border-bottom: none; }
+.variant-card:active { background: #f0f0f0; }
+.variant-info { flex: 1; min-width: 0; }
+.variant-name { font-size: 13px; font-weight: 500; color: #1a1a1a; }
+.variant-price { font-size: 11px; color: #888; margin-top: 1px; }
 
 /* カート */
 .cart-view { flex: 1; padding: 8px 12px; overflow-y: auto; display: flex; flex-direction: column; }
@@ -230,6 +244,32 @@ var PRODUCTS = [
 var cart = [];   // [{productId, qty}]
 var log  = [];   // 確定した取引の履歴
 var cashInputShowing = false;
+var expandedGroups = {}; // { base名: true/false }
+
+/* ---- 商品名から「ベース名」と「バリエーション」を分離 ----
+   例）「オリーブテープ50mm 白」→ base:「オリーブテープ50mm」, variant:「白」
+   スペースを含まない商品名はグループ化せず単品として扱う */
+function splitProductName(name) {
+  var lastSpace = name.lastIndexOf(' ');
+  if (lastSpace === -1) return { base: name, variant: null };
+  return { base: name.slice(0, lastSpace), variant: name.slice(lastSpace + 1) };
+}
+
+function buildGroups() {
+  var map = {};
+  var order = [];
+  PRODUCTS.forEach(function(p) {
+    var s = splitProductName(p.name);
+    if (!map[s.base]) { map[s.base] = []; order.push(s.base); }
+    map[s.base].push({ product: p, variant: s.variant });
+  });
+  return { map: map, order: order };
+}
+
+function toggleGroup(base) {
+  expandedGroups[base] = !expandedGroups[base];
+  renderProducts();
+}
 
 /* ---- 自動保存（スマホ内に保存） ---- */
 var STORAGE_KEY = 'hanbaiki_data_v1';
@@ -398,6 +438,7 @@ function loadCSV(input) {
       PRODUCTS = newProducts;
       cart = [];
       log = [];
+      expandedGroups = {};
       renderAll();
       updateSummary();
       showToast(newProducts.length + '件の商品を読み込みました');
@@ -480,19 +521,68 @@ function updateCartBadge() {
 /* ---- レンダリング ---- */
 function fmt(n) { return '¥' + n.toLocaleString(); }
 
-function renderProducts() {
-  document.getElementById('view-products').innerHTML = PRODUCTS.map(function(p) {
-    var inCart = cart.find(function(c){ return c.productId === p.id; });
-    var badge = inCart ? '<span class="in-cart-badge">カート' + inCart.qty + '</span>' : '';
-    return '<div class="product-card" onclick="addToCart(\'' + p.id + '\')">'
-      + '<div class="product-info">'
-      + '<div class="product-name">' + p.name + '</div>'
-      + '<div class="product-price-label">' + fmt(p.price) + '</div>'
+function inCartQty(productId) {
+  var item = cart.find(function(c){ return c.productId === productId; });
+  return item ? item.qty : 0;
+}
+
+function renderSingleCard(p) {
+  var qty = inCartQty(p.id);
+  var badge = qty > 0 ? '<span class="in-cart-badge">カート' + qty + '</span>' : '';
+  return '<div class="product-card" onclick="addToCart(\'' + p.id + '\')">'
+    + '<div class="product-info">'
+    + '<div class="product-name">' + p.name + '</div>'
+    + '<div class="product-price-label">' + fmt(p.price) + '</div>'
+    + '</div>'
+    + badge
+    + '<div class="add-btn">+</div>'
+    + '</div>';
+}
+
+function renderGroupCard(base, items) {
+  var expanded = !!expandedGroups[base];
+  var prices = items.map(function(it){ return it.product.price; });
+  var min = Math.min.apply(null, prices), max = Math.max.apply(null, prices);
+  var priceLabel = (min === max ? fmt(min) : fmt(min) + '〜' + fmt(max)) + '・全' + items.length + '種';
+  var totalQty = items.reduce(function(sum, it){ return sum + inCartQty(it.product.id); }, 0);
+  var badge = totalQty > 0 ? '<span class="in-cart-badge">カート' + totalQty + '</span>' : '';
+  var baseAttr = base.replace(/'/g, "\\'");
+
+  var header = '<div class="product-card group-header' + (expanded ? ' expanded' : '') + '" onclick="toggleGroup(\'' + baseAttr + '\')">'
+    + '<div class="product-info">'
+    + '<div class="product-name">' + base + '</div>'
+    + '<div class="product-price-label">' + priceLabel + '</div>'
+    + '</div>'
+    + badge
+    + '<div class="chevron' + (expanded ? ' expanded' : '') + '">▶</div>'
+    + '</div>';
+
+  if (!expanded) return header;
+
+  var body = '<div class="group-body">' + items.map(function(it) {
+    var p = it.product;
+    var qty = inCartQty(p.id);
+    var vbadge = qty > 0 ? '<span class="in-cart-badge">カート' + qty + '</span>' : '';
+    return '<div class="variant-card" onclick="addToCart(\'' + p.id + '\')">'
+      + '<div class="variant-info">'
+      + '<div class="variant-name">' + (it.variant || p.name) + '</div>'
+      + '<div class="variant-price">' + fmt(p.price) + '</div>'
       + '</div>'
-      + badge
-      + '<div class="add-btn">+</div>'
+      + vbadge
+      + '<div class="add-btn small">+</div>'
       + '</div>';
+  }).join('') + '</div>';
+
+  return header + body;
+}
+
+function renderProducts() {
+  var groups = buildGroups();
+  var html = groups.order.map(function(base) {
+    var items = groups.map[base];
+    return items.length > 1 ? renderGroupCard(base, items) : renderSingleCard(items[0].product);
   }).join('');
+  document.getElementById('view-products').innerHTML = html;
 }
 
 function renderCart() {
